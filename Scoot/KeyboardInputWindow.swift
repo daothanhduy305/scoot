@@ -168,10 +168,9 @@ class KeyboardInputWindow: TransparentWindow {
 
         let elements = Accessibility
           .getAccessibleElementsForFocusedWindow(of: app)
-        // Because Scoot places labels vertically, horizontal congestion is
-        // less of an issue in practice. For this reason, add padding in the y
-        // direction only (`paddingY`).
-          .reducingCrowding(intersectionThreshold: 0.1, paddingX: 0.0, paddingY: 10.0)
+        // Use no padding: vertical padding made closely stacked items
+        // (menus, lists) drop every other entry.
+          .reducingCrowding(intersectionThreshold: 0.1, paddingX: 0.0, paddingY: 0.0)
 
         var data = [(elements: [Accessibility.Element], screenRects: [CGRect])]()
 

@@ -69,6 +69,8 @@ struct Accessibility {
             try? app.setAttribute(.enhancedUserInterface, value: true)
         }
 
+        try? app.setAttribute("AXManualAccessibility", value: true)
+
         return enhancedUserInterfaceAlreadyEnabled
     }
 
@@ -80,6 +82,8 @@ struct Accessibility {
         OSLog.main.log("Disabling AXEnhancedUserInterface for \(String(describing: runningApp.localizedName ?? "<unknown>"), privacy: .private(mask: .hash))")
 
         try? app.setAttribute(.enhancedUserInterface, value: false)
+        // Leave AXManualAccessibility on: Chromium only re-applies it to newly loaded pages,
+        // so clearing it breaks detection after a Scoot relaunch until the page is reloaded.
     }
 
     // Some apps are not accessible unless an assistive client (such as
@@ -114,6 +118,18 @@ struct Accessibility {
 
             Accessibility.enableEnhancedUserInterfaceIfNecessary(for: app)
         }
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+
+            Accessibility.enableEnhancedUserInterfaceIfNecessary(for: app)
+        }
     }
 
     static func disableEnhancedUserInterfaceForAllApps() {
@@ -125,6 +141,8 @@ struct Accessibility {
     }
 
     static func getAccessibleElementsForFocusedWindow(of runningApp: NSRunningApplication) -> [Element] {
+        // Chromium can auto-disable its AX tree, so re-assert before traversal.
+        enableEnhancedUserInterfaceIfNecessary(for: runningApp)
         var elements = [Element]()
 
         guard let app = Application(runningApp) else {
@@ -139,7 +157,7 @@ struct Accessibility {
             return elements
         }
 
-        func traverse(node: UIElement) {
+        func traverse(node: UIElement, clip: CGRect) {
             guard let children: [UIElement] = try? node.arrayAttribute(.children) else {
                 return
             }
@@ -157,19 +175,19 @@ struct Accessibility {
                     continue
                 }
 
-                // Ignore any elements that don't intersect with the window
-                // bounds.
-                guard focusedWindowFrame.intersects(frame) else {
+                let clippedFrame = frame.intersection(clip)
+                guard !clippedFrame.isEmpty else {
                     continue
                 }
 
-                let convertedFrame = frame.convertToCocoa()
+                let convertedFrame = clippedFrame.convertToCocoa()
 
                 let screen = NSScreen.screens.first(where: {
                     $0.frame.contains(convertedFrame)
                 })
 
-                let role: Role? = try? child.role()
+                let role: Role? = (try? child.role()) ??
+                    ((try? child.attribute(.role) as String?) == "AXMenuBarItem" ? .menuItem : nil)
 
                 if let role = role, let screen = screen {
 
@@ -188,19 +206,22 @@ struct Accessibility {
                     }
 
                     switch role {
-                    case .cell, .button, .radioButton, .link, .checkBox, .slider, .popUpButton, .menuButton, .incrementor, .handle:
+                    case .cell, .button, .radioButton, .link, .checkBox, .slider, .popUpButton, .menuButton, .menuItem, .incrementor, .handle:
                         addElement()
                     default:
-                        break
+                        let ignoredActions: Set<String> = ["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI", "AXCancel"]
+                        if !Set((try? child.actionsAsStrings()) ?? []).subtracting(ignoredActions).isEmpty {
+                            addElement()
+                        }
                     }
                 }
 
-                traverse(node: child)
+                traverse(node: child, clip: clippedFrame)
             }
 
         }
 
-        traverse(node: focusedWindow)
+        traverse(node: focusedWindow, clip: focusedWindowFrame)
 
         OSLog.main.debug("Found \(elements.count) accessibility elements.")
 
