@@ -7,17 +7,6 @@ struct Accessibility {
     struct Element: Positionable, Equatable {
         let role: Role
 
-        let subrole: Subrole?
-
-        let title: String?
-
-        let description: String?
-
-        let valueDescription: String?
-
-        /// True, if the element responds to user.
-        let enabled: Bool
-
         /// The screen that the element is located on.
         let screen: NSScreen
 
@@ -153,16 +142,16 @@ struct Accessibility {
             return elements
         }
 
-        guard let focusedWindowFrame: CGRect = try? focusedWindow.attribute(.frame) else {
+        guard let windowAttributes = try? focusedWindow.getMultipleAttributes(.role, .subrole, .frame, .children),
+              let focusedWindowFrame = windowAttributes[.frame] as? CGRect else {
             return elements
         }
 
-        func traverse(node: UIElement, clip: CGRect) {
-            guard let children: [UIElement] = try? node.arrayAttribute(.children) else {
-                return
-            }
+        func traverse(node: UIElement, role: String?, subrole: String?, children: [AXUIElement], clip: CGRect) {
+            let isSectionList = role == "AXList" && subrole == "AXSectionList"
 
-            for child in children {
+            for nativeChild in children {
+                let child = UIElement(nativeChild)
 
                 // Bail, if the parent and child are (somehow?) the same node.
                 //
@@ -171,7 +160,8 @@ struct Accessibility {
                     continue
                 }
 
-                guard let frame: CGRect = try? child.attribute(.frame) else {
+                guard let attributes = try? child.getMultipleAttributes(.role, .subrole, .frame, .children),
+                      let frame = attributes[.frame] as? CGRect else {
                     continue
                 }
 
@@ -186,19 +176,15 @@ struct Accessibility {
                     $0.frame.contains(convertedFrame)
                 })
 
-                let role: Role? = (try? child.role()) ??
-                    ((try? child.attribute(.role) as String?) == "AXMenuBarItem" ? .menuItem : nil)
+                let roleName = attributes[.role] as? String
+                let role = roleName.flatMap(Role.init(rawValue:)) ??
+                    (roleName == "AXMenuBarItem" ? .menuItem : nil)
 
                 if let role = role, let screen = screen {
 
                     func addElement() {
                         let element = Element(
                             role: role,
-                            subrole: try? child.subrole(),
-                            title: try? child.attribute(.title),
-                            description: try? child.attribute(.description),
-                            valueDescription: try? child.attribute(.valueDescription),
-                            enabled: (try? child.attribute(.enabled)) ?? false,
                             screen: screen,
                             frame: convertedFrame
                         )
@@ -212,22 +198,34 @@ struct Accessibility {
                         let ignoredActions: Set<String> = ["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI", "AXCancel"]
                         if !Set((try? child.actionsAsStrings()) ?? []).subtracting(ignoredActions).isEmpty {
                             addElement()
-                        } else if !["AXWebArea", "AXScrollArea", "AXWindow"].contains(role.rawValue),
+                        } else if !["AXWebArea", "AXScrollArea", "AXWindow", "AXList"].contains(role.rawValue),
                                   clippedFrame.area <= focusedWindowFrame.area * 0.5,
                                   (try? child.attributeIsSettable(.focused)) == true {
+                            addElement()
+                        } else if isSectionList {
                             addElement()
                         }
                     }
                 }
 
-                traverse(node: child, clip: clippedFrame)
+                traverse(node: child,
+                         role: roleName,
+                         subrole: attributes[.subrole] as? String,
+                         children: attributes[.children] as? [AXUIElement] ?? [],
+                         clip: roleName == "AXScrollArea" ? clippedFrame : clip)
             }
 
         }
 
-        traverse(node: focusedWindow, clip: focusedWindowFrame)
+        let traversalStart = DispatchTime.now()
+        traverse(node: focusedWindow,
+                 role: windowAttributes[.role] as? String,
+                 subrole: windowAttributes[.subrole] as? String,
+                 children: windowAttributes[.children] as? [AXUIElement] ?? [],
+                 clip: focusedWindowFrame)
+        let elapsedMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - traversalStart.uptimeNanoseconds) / 1_000_000
 
-        OSLog.main.debug("Found \(elements.count) accessibility elements.")
+        OSLog.main.debug("Found \(elements.count) accessibility elements in \(elapsedMilliseconds) ms.")
 
         return elements
     }
