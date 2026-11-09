@@ -98,6 +98,14 @@ class PositionableTests: XCTestCase {
         XCTAssertEqual(reduceCrowding([b1, a1]), [a1])
     }
 
+    func testContainerKeptWhenChildIsMuchSmaller() {
+        let container = Item(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let child = Item(frame: CGRect(x: 10, y: 10, width: 10, height: 10))
+
+        XCTAssertEqual(reduceCrowding([container, child]), [container, child])
+        XCTAssertEqual(reduceCrowding([child, container]), [child, container])
+    }
+
     func testSmallerItemsRemovedWhenFramesOverlapAtLeastTenPercent() {
         let size = CGSize(width: 10, height: 10)
 

@@ -212,6 +212,10 @@ struct Accessibility {
                         let ignoredActions: Set<String> = ["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI", "AXCancel"]
                         if !Set((try? child.actionsAsStrings()) ?? []).subtracting(ignoredActions).isEmpty {
                             addElement()
+                        } else if !["AXWebArea", "AXScrollArea", "AXWindow"].contains(role.rawValue),
+                                  clippedFrame.area <= focusedWindowFrame.area * 0.5,
+                                  (try? child.attributeIsSettable(.focused)) == true {
+                            addElement()
                         }
                     }
                 }

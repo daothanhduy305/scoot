@@ -57,6 +57,10 @@ extension Array where Element: Positionable, Element: Equatable {
                 let paddedFramesIntersect = candidate.frame.insetBy(dx: -paddingX, dy: -paddingY).intersects(accumulated.frame)
 
                 if percentageOverlapping == 1 {
+                    // A container like a list row and its distinct controls are separate targets.
+                    if Swift.min(candidate.frame.area, accumulated.frame.area) < Swift.max(candidate.frame.area, accumulated.frame.area) * 0.25 {
+                        return false
+                    }
                     // To reduce crowding, only one element is kept (either the
                     // candidate, or the accumulated). In this case, where the
                     // elements fully overlap, we choose to keep the element
