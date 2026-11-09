@@ -132,25 +132,31 @@ struct Accessibility {
     static func getAccessibleElementsForFocusedWindow(of runningApp: NSRunningApplication) -> [Element] {
         // Chromium can auto-disable its AX tree, so re-assert before traversal.
         enableEnhancedUserInterfaceIfNecessary(for: runningApp)
-        var elements = [Element]()
+        var elements = [(element: Element, layer: Int)]()
+        var weakCandidates = [(element: Element, layer: Int)]()
+        var branchFrames = [Int: [CGRect]]()
 
         guard let app = Application(runningApp) else {
-            return elements
+            return []
         }
 
         guard let focusedWindow: UIElement = try? app.attribute(.focusedWindow) else {
-            return elements
+            return []
         }
 
         guard let windowAttributes = try? focusedWindow.getMultipleAttributes(.role, .subrole, .frame, .children),
               let focusedWindowFrame = windowAttributes[.frame] as? CGRect else {
-            return elements
+            return []
         }
 
-        func traverse(node: UIElement, role: String?, subrole: String?, children: [AXUIElement], clip: CGRect) {
-            let isSectionList = role == "AXList" && subrole == "AXSectionList"
+        func traverse(node: UIElement, role: String?, subrole: String?, children: [AXUIElement], clip: CGRect,
+                      layer: Int, inWebArea: Bool, findingBranches: Bool) {
+            let isList = role == "AXList"
+            let isInWebArea = inWebArea || role == "AXWebArea"
+            let branchesPending = findingBranches || (!inWebArea && role == "AXWebArea")
+            let assignsLayers = branchesPending && children.count > 1
 
-            for nativeChild in children {
+            for (index, nativeChild) in children.enumerated() {
                 let child = UIElement(nativeChild)
 
                 // Bail, if the parent and child are (somehow?) the same node.
@@ -171,6 +177,10 @@ struct Accessibility {
                 }
 
                 let convertedFrame = clippedFrame.convertToCocoa()
+                let childLayer = assignsLayers ? index : layer
+                if assignsLayers && childLayer > 0 {
+                    branchFrames[childLayer, default: []].append(convertedFrame)
+                }
 
                 let screen = NSScreen.screens.first(where: {
                     $0.frame.contains(convertedFrame)
@@ -188,7 +198,7 @@ struct Accessibility {
                             screen: screen,
                             frame: convertedFrame
                         )
-                        elements.append(element)
+                        elements.append((element, childLayer))
                     }
 
                     switch role {
@@ -202,8 +212,8 @@ struct Accessibility {
                                   clippedFrame.area <= focusedWindowFrame.area * 0.5,
                                   (try? child.attributeIsSettable(.focused)) == true {
                             addElement()
-                        } else if isSectionList {
-                            addElement()
+                        } else if isList && role == .group {
+                            weakCandidates.append((Element(role: role, screen: screen, frame: convertedFrame), childLayer))
                         }
                     }
                 }
@@ -212,7 +222,10 @@ struct Accessibility {
                          role: roleName,
                          subrole: attributes[.subrole] as? String,
                          children: attributes[.children] as? [AXUIElement] ?? [],
-                         clip: roleName == "AXScrollArea" ? clippedFrame : clip)
+                         clip: roleName == "AXScrollArea" ? clippedFrame : clip,
+                         layer: childLayer,
+                         inWebArea: isInWebArea,
+                         findingBranches: branchesPending && !assignsLayers)
             }
 
         }
@@ -222,12 +235,37 @@ struct Accessibility {
                  role: windowAttributes[.role] as? String,
                  subrole: windowAttributes[.subrole] as? String,
                  children: windowAttributes[.children] as? [AXUIElement] ?? [],
-                 clip: focusedWindowFrame)
+                 clip: focusedWindowFrame,
+                 layer: 0,
+                 inWebArea: false,
+                 findingBranches: false)
         let elapsedMilliseconds = Double(DispatchTime.now().uptimeNanoseconds - traversalStart.uptimeNanoseconds) / 1_000_000
+
+        // ponytail: DOM order stands in for z-order (no AX z-order; hit-testing is unusable in Chromium/Dia); layers that hold no candidates never occlude.
+        var occluders = [Int: [CGRect]]()
+        for candidate in elements + weakCandidates where candidate.layer > 0 {
+            if occluders[candidate.layer] == nil {
+                occluders[candidate.layer] = branchFrames[candidate.layer] ?? []
+            }
+            occluders[candidate.layer, default: []].append(candidate.element.frame)
+        }
+        func isOccluded(_ candidate: (element: Element, layer: Int)) -> Bool {
+            let midpoint = CGPoint(x: candidate.element.frame.midX, y: candidate.element.frame.midY)
+            return occluders.contains { layer, frames in
+                layer > candidate.layer && frames.contains { $0.contains(midpoint) }
+            }
+        }
+        elements.removeAll(where: isOccluded)
+        weakCandidates.removeAll(where: isOccluded)
+
+        // ponytail: O(weak × strong) is acceptable at current sizes.
+        elements.append(contentsOf: weakCandidates.filter { candidate in
+            !elements.contains { candidate.element.frame.contains(CGPoint(x: $0.element.frame.midX, y: $0.element.frame.midY)) }
+        })
 
         OSLog.main.debug("Found \(elements.count) accessibility elements in \(elapsedMilliseconds) ms.")
 
-        return elements
+        return elements.map(\.element)
     }
 
 }
