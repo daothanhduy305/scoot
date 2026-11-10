@@ -249,11 +249,12 @@ struct Accessibility {
             }
             occluders[candidate.layer, default: []].append(candidate.element.frame)
         }
+        // Keep the top two layers visible: a candidate is hidden only once two or more overlays sit above it.
         func isOccluded(_ candidate: (element: Element, layer: Int)) -> Bool {
             let midpoint = CGPoint(x: candidate.element.frame.midX, y: candidate.element.frame.midY)
-            return occluders.contains { layer, frames in
+            return occluders.filter { layer, frames in
                 layer > candidate.layer && frames.contains { $0.contains(midpoint) }
-            }
+            }.count >= 2
         }
         elements.removeAll(where: isOccluded)
         weakCandidates.removeAll(where: isOccluded)
